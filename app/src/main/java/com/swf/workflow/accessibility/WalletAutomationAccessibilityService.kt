@@ -2,7 +2,6 @@ package com.swf.workflow.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -67,8 +66,16 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     private var lastEventPackageName: String? = null
     private var floatingReminderView: View? = null
     private var quickActionOverlayView: View? = null
+    private var lastShizukuForegroundPackage: String? = null
+    private var lastShizukuQueryAtMs = 0L
     private var lastUsageForegroundPackage: String? = null
     private var lastUsageQueryAtMs = 0L
+    private var lastStageReminderText: String? = null
+    private var lastStageReminderAtMs = 0L
+    private var finishHintFirstSeenAtMs = 0L
+    private var walletSettleUntilMs = 0L
+    private var nextWalletSettleNotifyAtMs = 0L
+    private var rewardResultForegroundConfirmRetry = 0
     private val windowManager by lazy { getSystemService(WINDOW_SERVICE) as WindowManager }
     private val removeFloatingReminderRunnable = Runnable {
         removeFloatingReminderInternal()
@@ -87,7 +94,20 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (event == null) {
             return
         }
-        lastEventPackageName = event.packageName?.toString()
+        val eventPackage = event.packageName?.toString()
+        if (!eventPackage.isNullOrBlank()) {
+            val previousPackage = lastEventPackageName
+            lastEventPackageName = eventPackage
+            if (eventPackage == WALLET_PACKAGE &&
+                previousPackage != WALLET_PACKAGE &&
+                shouldArmWalletSettleOnWalletEnter()
+            ) {
+                armWalletSettleWindow()
+            } else if (eventPackage != WALLET_PACKAGE) {
+                walletSettleUntilMs = 0L
+                nextWalletSettleNotifyAtMs = 0L
+            }
+        }
 
         if (WalletAutomationRuntime.consumeStopRequest()) {
             requestStopAndReturnToWallet("用户主动停止流程")
@@ -111,8 +131,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 val now = SystemClock.elapsedRealtime()
-                val isWindowStateChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                if (!isWindowStateChanged && now - lastEventHandledAtMs < EVENT_HANDLE_MIN_INTERVAL_MS) {
+                if (now - lastEventHandledAtMs < EVENT_HANDLE_MIN_INTERVAL_MS) {
                     return
                 }
                 lastEventHandledAtMs = now
@@ -161,6 +180,10 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (shouldWaitWalletSettle(currentStep)) {
+            return
+        }
+
         when (currentStep) {
             AutomationStep.IDLE -> Unit
             AutomationStep.WAIT_WALLET_HOME -> handleWalletHomeStep(trigger)
@@ -193,7 +216,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         }
 
         if (clickByKeywords(FIRST_STEP_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
-            announceHit("命中“领视频会员”按钮（节点）")
+            announceHit("已点击“领视频会员”（节点）")
             WalletAutomationRuntime.info("已点击“领视频会员”($trigger)")
             transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = 1200)
             return
@@ -203,7 +226,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 keywords = FIRST_STEP_KEYWORDS,
                 stepLabel = "领视频会员",
                 onSuccess = {
-                    announceHit("命中“领视频会员”按钮（OCR）")
+                    announceHit("已点击“领视频会员”（OCR）")
                     WalletAutomationRuntime.info("OCR识别成功，已点击“领视频会员”")
                     transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = 1200)
                 },
@@ -243,7 +266,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         val useLooseMatch = currentRetry >= WATCH_BUTTON_LOOSE_MATCH_RETRY_THRESHOLD
 
         if (clickByKeywords(CLICK_CLAIM_MEMBER_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
-            announceHit("命中“点击领会员”按钮（节点）")
+            announceHit("已点击“点击领会员”（节点）")
             WalletAutomationRuntime.info("已点击“点击领会员”($trigger)，等待奖励弹窗")
             transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 1000)
             return
@@ -253,13 +276,13 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (nodeHit != null) {
             when (nodeHit.type) {
                 WatchStageHitType.FINISH -> {
-                    announceHit("命中完成态：开提醒/会员不漏领（节点）")
+                    announceHit("识别到完成态：开提醒/会员不漏领（节点）")
                     completeAndReturnToSelf("检测到“开提醒/会员不漏领”提示，任务处理完成")
                 }
 
                 WatchStageHitType.WATCH -> {
                     if (clickNode(nodeHit.node)) {
-                        announceHit("命中“看10秒类”按钮（节点）")
+                        announceHit("已点击“看10秒领会员”（节点）")
                         WalletAutomationRuntime.info("已点击“看10秒领会员”($trigger)")
                         transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 900)
                     } else {
@@ -306,13 +329,13 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     if (finishHit != null &&
                         (watchHit == null || finishHit.score + FINISH_HIT_PRIORITY_BONUS >= watchHit.score)
                     ) {
-                        announceHit("命中完成态：开提醒/会员不漏领（OCR）")
+                        announceHit("识别到完成态：开提醒/会员不漏领（OCR）")
                         completeAndReturnToSelf("检测到“开提醒/会员不漏领”提示，任务处理完成")
                         return@runOcrSnapshot
                     }
 
                     if (watchHit != null && performGestureClick(watchHit.rect)) {
-                        announceHit("命中“看10秒类”按钮（OCR）")
+                        announceHit("已点击“看10秒领会员”（OCR）")
                         WalletAutomationRuntime.info("OCR识别成功，已点击“看10秒领会员”")
                         transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 900)
                         return@runOcrSnapshot
@@ -322,7 +345,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                         (watchHit == null || claimHit.score >= watchHit.score) &&
                         performGestureClick(claimHit.rect)
                     ) {
-                        announceHit("命中“点击领会员”按钮（OCR）")
+                        announceHit("已点击“点击领会员”（OCR）")
                         WalletAutomationRuntime.info("OCR识别成功，已点击“点击领会员”")
                         transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 1000)
                         return@runOcrSnapshot
@@ -368,7 +391,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
     private fun handleJumpConfirmStep(trigger: String) {
         if (clickByKeywords(THIRD_STEP_KEYWORDS, preferredPackage = null)) {
-            announceHit("命中“点击立即跳转”（节点）")
+            announceHit("已点击“点击立即跳转”（节点）")
             WalletAutomationRuntime.info("已点击“点击立即跳转”($trigger)")
             transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
             return
@@ -378,7 +401,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 keywords = THIRD_STEP_KEYWORDS,
                 stepLabel = "点击立即跳转",
                 onSuccess = {
-                    announceHit("命中“点击立即跳转”（OCR）")
+                    announceHit("已点击“点击立即跳转”（OCR）")
                     WalletAutomationRuntime.info("OCR识别成功，已点击“点击立即跳转”")
                     transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
                 },
@@ -404,22 +427,51 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleExternalSwitchStep(trigger: String) {
+        val foregroundPkg = currentForegroundPackage(forceRefresh = true)
+        if (isClosableExternalPackage(foregroundPkg)) {
+            startExternalCountdown(foregroundPkg, trigger)
+            return
+        }
+
+        if (foregroundPkg == WALLET_PACKAGE || foregroundPkg == packageName) {
+            val retryHint = if (foregroundPkg == WALLET_PACKAGE) {
+                "仍在小米钱包，等待外部应用切换"
+            } else {
+                "仍在本应用，等待外部应用切换"
+            }
+            retryOrFail(
+                maxRetry = 16,
+                nextDelayMs = 1200,
+                failMessage = "点击跳转后未切换到外部应用，流程已停止",
+                retryHint = retryHint
+            )
+            return
+        }
+
         val jumpStillVisible = containsKeywordsByNode(
             keywords = THIRD_STEP_KEYWORDS,
             preferredPackage = null
         )
         if (jumpStillVisible) {
             retryOrFail(
-                maxRetry = 12,
-                nextDelayMs = 700,
+                maxRetry = 16,
+                nextDelayMs = 1200,
                 failMessage = "点击跳转后页面未变化，流程已停止",
                 retryHint = "等待“点击立即跳转”文案消失"
             )
             return
         }
 
-        val pkg = currentForegroundPackage()
-        externalPackageName = pkg
+        retryOrFail(
+            maxRetry = 16,
+            nextDelayMs = 1200,
+            failMessage = "点击跳转后无法确认外部应用，流程已停止",
+            retryHint = "等待外部应用切换"
+        )
+    }
+
+    private fun startExternalCountdown(foregroundPkg: String?, trigger: String) {
+        externalPackageName = foregroundPkg
         val waitMs = Random.nextLong(EXTERNAL_WAIT_MIN_MS, EXTERNAL_WAIT_MAX_MS + 1)
         externalWaitDeadlineMs = SystemClock.elapsedRealtime() + waitMs
         nextExternalNotifyAtMs = SystemClock.elapsedRealtime()
@@ -427,15 +479,15 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         val waitSec = waitMs / 1000
         WalletAutomationRuntime.step(
             step = AutomationStep.WAIT_EXTERNAL_COUNTDOWN.label,
-            message = "检测到“点击立即跳转”文案已消失，视为已跳转，等待${waitSec}秒"
+            message = "已确认跳转到外部应用($foregroundPkg)，等待${waitSec}秒"
         )
         showToast("已跳转外部应用，等待${waitSec}秒")
         showQuickActionOverlay("外跳中，可手动回跳")
 
-        Log.i(TAG, "external switched by $trigger, package=$pkg")
+        Log.i(TAG, "external switched by $trigger, package=$foregroundPkg")
         transitTo(
             step = AutomationStep.WAIT_EXTERNAL_COUNTDOWN,
-            triggerAfterMs = 350L,
+            triggerAfterMs = 500L,
             logStep = false
         )
     }
@@ -527,7 +579,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         removeQuickActionOverlay()
 
         if (clickByKeywords(CLICK_CLAIM_MEMBER_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
-            announceHit("命中“点击领会员”按钮（节点）")
+            announceHit("已点击“点击领会员”（节点）")
             WalletAutomationRuntime.info("已点击“点击领会员”($trigger)，等待奖励弹窗“开”")
             currentRetry = 0
             scheduleStep(1000)
@@ -574,13 +626,30 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleRewardResultStep(trigger: String) {
-        if (!isWalletOnTop()) {
-            WalletAutomationRuntime.info("奖励结果阶段检测到已离开钱包，回到跳转检测")
-            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
+        val foregroundPkg = currentForegroundPackage(forceRefresh = true)
+        if (foregroundPkg != WALLET_PACKAGE) {
+            finishHintFirstSeenAtMs = 0L
+            rewardResultForegroundConfirmRetry += 1
+            if (rewardResultForegroundConfirmRetry <= REWARD_RESULT_FOREGROUND_CONFIRM_MAX_RETRY) {
+                val current = foregroundPkg.orEmpty().ifBlank { "未知" }
+                WalletAutomationRuntime.info(
+                    "奖励结果页前台确认中(${rewardResultForegroundConfirmRetry}/" +
+                        "$REWARD_RESULT_FOREGROUND_CONFIRM_MAX_RETRY)：$current"
+                )
+                scheduleStep(REWARD_RESULT_FOREGROUND_CONFIRM_INTERVAL_MS)
+                return
+            }
+
+            val finalForeground = foregroundPkg.orEmpty().ifBlank { "未知" }
+            WalletAutomationRuntime.info("奖励结果页确认已离开钱包（$finalForeground），回到跳转检测")
+            rewardResultForegroundConfirmRetry = 0
+            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1100)
             return
         }
+        rewardResultForegroundConfirmRetry = 0
 
         if (clickByKeywords(CONTINUE_REWARD_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
+            finishHintFirstSeenAtMs = 0L
             roundCount += 1
             WalletAutomationRuntime.info("已点击继续领取按钮($trigger)，进入第${roundCount}轮")
             transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 1100)
@@ -588,13 +657,14 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         }
 
         if (clickByKeywords(THIRD_STEP_KEYWORDS, preferredPackage = null)) {
+            finishHintFirstSeenAtMs = 0L
             WalletAutomationRuntime.info("奖励结果页检测到“点击立即跳转”，继续外部流程")
             transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
             return
         }
 
         if (containsKeywordsByNode(FINISH_REWARD_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
-            completeAndReturnToSelf("检测到“开提醒/会员不漏领”提示，流程结束")
+            handleFinishHintDetected("节点")
             return
         }
 
@@ -621,6 +691,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     height = height
                 )
                 if (continueRect != null && performGestureClick(continueRect)) {
+                    finishHintFirstSeenAtMs = 0L
                     roundCount += 1
                     WalletAutomationRuntime.info("OCR识别成功，已点击继续领取，进入第${roundCount}轮")
                     transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 1100)
@@ -634,6 +705,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     height = height
                 )
                 if (jumpRect != null && performGestureClick(jumpRect)) {
+                    finishHintFirstSeenAtMs = 0L
                     WalletAutomationRuntime.info("OCR识别成功，已点击“点击立即跳转”")
                     transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
                     return@runOcrSnapshot
@@ -646,7 +718,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     height = height
                 ) != null
                 if (finishFound) {
-                    completeAndReturnToSelf("检测到“开提醒/会员不漏领”提示，流程结束")
+                    handleFinishHintDetected("OCR")
                     return@runOcrSnapshot
                 }
 
@@ -669,11 +741,30 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun completeAndReturnToSelf(message: String) {
+        finishHintFirstSeenAtMs = 0L
         completionReason = message
         stopReason = null
         walletCloseAttemptedForFinalReturn = false
         WalletAutomationRuntime.info("检测到完成态，准备关闭小米钱包并返回本应用")
         transitTo(AutomationStep.RETURN_TO_SELF_APP_FINAL, triggerAfterMs = 220)
+    }
+
+    private fun handleFinishHintDetected(source: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (finishHintFirstSeenAtMs == 0L) {
+            finishHintFirstSeenAtMs = now
+            WalletAutomationRuntime.info("识别到结束提示($source)，等待3秒确认是否还会出现10秒按钮")
+            scheduleStep(FINISH_CONFIRM_WAIT_MS)
+            return
+        }
+
+        val elapsedMs = now - finishHintFirstSeenAtMs
+        if (elapsedMs < FINISH_CONFIRM_WAIT_MS) {
+            scheduleStep(FINISH_CONFIRM_WAIT_MS - elapsedMs)
+            return
+        }
+
+        completeAndReturnToSelf("检测到“开提醒/会员不漏领”提示，流程结束")
     }
 
     private fun handleReturnToSelfAppFinalStep() {
@@ -742,21 +833,21 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             return true
         }
 
-        val restartIntent = Intent.makeRestartActivityTask(
-            ComponentName(this, MainActivity::class.java)
-        )
-        val restartLaunched = runCatching {
-            startActivity(restartIntent)
-        }.isSuccess
-        if (restartLaunched) {
-            return true
-        }
-
         val commonFlags =
             Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+
+        val packageLaunchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val packageLaunched = runCatching {
+            packageLaunchIntent?.addFlags(commonFlags)
+            if (packageLaunchIntent != null) {
+                startActivity(packageLaunchIntent)
+            }
+        }.isSuccess
+        if (packageLaunched && packageLaunchIntent != null) {
+            return true
+        }
 
         val explicitIntent = Intent(this, MainActivity::class.java).apply {
             action = Intent.ACTION_MAIN
@@ -770,36 +861,18 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             return true
         }
 
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
-        val packageLaunched = runCatching {
-            launchIntent.addFlags(commonFlags)
-            startActivity(launchIntent)
-        }.isSuccess
-        if (packageLaunched) {
-            return true
-        }
-
         if (!aggressive) {
             return false
         }
 
-        // Aggressive retry path for MIUI-like ROMs: clear task then relaunch.
-        val clearTaskExplicit = Intent(this, MainActivity::class.java).apply {
+        val fallbackIntent = Intent(Intent.ACTION_MAIN).apply {
+            `package` = packageName
             action = Intent.ACTION_MAIN
             addCategory(Intent.CATEGORY_LAUNCHER)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            flags = commonFlags
         }
-        val clearExplicitLaunched = runCatching {
-            startActivity(clearTaskExplicit)
-        }.isSuccess
-        if (clearExplicitLaunched) {
-            return true
-        }
-
-        val clearTaskLaunchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
         return runCatching {
-            clearTaskLaunchIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            startActivity(clearTaskLaunchIntent)
+            startActivity(fallbackIntent)
         }.isSuccess
     }
 
@@ -1036,8 +1109,8 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         showScreenReminder("已停止自动流程")
     }
 
-    private fun isWalletOnTop(): Boolean {
-        return currentForegroundPackage() == WALLET_PACKAGE
+    private fun isWalletOnTop(forceRefresh: Boolean = false): Boolean {
+        return currentForegroundPackage(forceRefresh = forceRefresh) == WALLET_PACKAGE
     }
 
     private fun resolveExternalPackageForClose(): String? {
@@ -1067,13 +1140,18 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun currentForegroundPackage(): String? {
+    private fun currentForegroundPackage(forceRefresh: Boolean = false): String? {
         val rootPkg = rootInActiveWindow?.packageName?.toString()
         if (!rootPkg.isNullOrBlank()) {
             return rootPkg
         }
 
-        val usagePkg = queryForegroundByUsageAccess()
+        val shizukuPkg = queryForegroundByShizuku(forceRefresh = forceRefresh)
+        if (!shizukuPkg.isNullOrBlank()) {
+            return shizukuPkg
+        }
+
+        val usagePkg = queryForegroundByUsageAccess(forceRefresh = forceRefresh)
         if (!usagePkg.isNullOrBlank()) {
             return usagePkg
         }
@@ -1081,18 +1159,89 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         return lastEventPackageName
     }
 
-    private fun queryForegroundByUsageAccess(): String? {
+    private fun armWalletSettleWindow() {
         val now = SystemClock.elapsedRealtime()
-        if (now - lastUsageQueryAtMs < USAGE_TOP_QUERY_INTERVAL_MS) {
+        val remaining = walletSettleUntilMs - now
+        if (remaining > 0L) {
+            return
+        }
+
+        walletSettleUntilMs = now + WALLET_SETTLE_WAIT_MS
+        nextWalletSettleNotifyAtMs = 0L
+        WalletAutomationRuntime.info("已进入小米钱包，先等待3-4秒再开始识别")
+        showStageReminder("等待钱包页面稳定")
+    }
+
+    private fun shouldArmWalletSettleOnWalletEnter(): Boolean {
+        return currentStep == AutomationStep.WAIT_WALLET_HOME ||
+            currentStep == AutomationStep.RETURN_TO_WALLET ||
+            currentStep == AutomationStep.RETURN_TO_WALLET_FINAL
+    }
+
+    private fun shouldWaitWalletSettle(step: AutomationStep): Boolean {
+        if (step != AutomationStep.WAIT_WALLET_HOME &&
+            step != AutomationStep.WAIT_WATCH_BUTTON &&
+            step != AutomationStep.WAIT_REWARD_ENTRY &&
+            step != AutomationStep.WAIT_REWARD_RESULT
+        ) {
+            return false
+        }
+
+        if (!isWalletOnTop()) {
+            return false
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        val remainingMs = walletSettleUntilMs - now
+        if (remainingMs <= 0L) {
+            return false
+        }
+
+        if (now >= nextWalletSettleNotifyAtMs) {
+            val sec = ((remainingMs + 999L) / 1000L).toInt()
+            WalletAutomationRuntime.info("钱包加载缓冲中，剩余${sec}秒")
+            nextWalletSettleNotifyAtMs = now + WALLET_SETTLE_PROGRESS_INTERVAL_MS
+        }
+        scheduleStep(minOf(WALLET_SETTLE_PROGRESS_INTERVAL_MS, remainingMs))
+        return true
+    }
+
+    private fun queryForegroundByShizuku(forceRefresh: Boolean = false): String? {
+        val now = SystemClock.elapsedRealtime()
+        if (!forceRefresh && now - lastShizukuQueryAtMs < SHIZUKU_TOP_QUERY_INTERVAL_MS) {
+            return lastShizukuForegroundPackage
+        }
+
+        lastShizukuQueryAtMs = now
+        val pkg = ShizukuBridge.resolveForegroundPackage(this)
+        if (pkg.isNullOrBlank()) {
+            if (forceRefresh) {
+                lastShizukuForegroundPackage = null
+                return null
+            }
+            return lastShizukuForegroundPackage
+        }
+        lastShizukuForegroundPackage = pkg
+        return pkg
+    }
+
+    private fun queryForegroundByUsageAccess(forceRefresh: Boolean = false): String? {
+        val now = SystemClock.elapsedRealtime()
+        if (!forceRefresh && now - lastUsageQueryAtMs < USAGE_TOP_QUERY_INTERVAL_MS) {
             return lastUsageForegroundPackage
         }
 
         lastUsageQueryAtMs = now
         val usagePkg = UsageAccessStatusChecker.queryForegroundPackage(this)
-        if (!usagePkg.isNullOrBlank()) {
-            lastUsageForegroundPackage = usagePkg
+        if (usagePkg.isNullOrBlank()) {
+            if (forceRefresh) {
+                lastUsageForegroundPackage = null
+                return null
+            }
+            return lastUsageForegroundPackage
         }
-        return lastUsageForegroundPackage
+        lastUsageForegroundPackage = usagePkg
+        return usagePkg
     }
 
     private fun clickByKeywords(
@@ -1400,6 +1549,10 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 return
             }
 
+            if (isIgnoredOcrSystemText(content)) {
+                return
+            }
+
             val normalizedContent = normalizeForMatch(content)
             if (normalizedContent.isEmpty()) {
                 return
@@ -1447,6 +1600,18 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         }
 
         return bestMatch?.takeIf { it.score >= OCR_MATCH_MIN_SCORE }
+    }
+
+    private fun isIgnoredOcrSystemText(content: String): Boolean {
+        val normalized = normalizeForMatch(content)
+        if (normalized.isEmpty()) {
+            return true
+        }
+
+        return normalized.contains("识别") ||
+            normalized.contains("执行计划") ||
+            normalized.contains("自动流程已启动") ||
+            normalized.contains("当前步骤")
     }
 
     private fun centerBonus(bounds: Rect, screen: ScreenFrame): Int {
@@ -1569,12 +1734,14 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (logStep) {
             WalletAutomationRuntime.step(step.label)
         }
+        showStageReminder(step.label)
         scheduleStep(triggerAfterMs)
     }
 
     private fun scheduleStep(delayMs: Long) {
+        val safeDelayMs = delayMs.coerceAtLeast(MIN_STEP_DELAY_MS)
         val now = SystemClock.elapsedRealtime()
-        val targetAtMs = now + delayMs
+        val targetAtMs = now + safeDelayMs
 
         if (scheduledStepAtMs != 0L &&
             now < scheduledStepAtMs &&
@@ -1585,7 +1752,19 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         mainHandler.removeCallbacks(stepRunnable)
         scheduledStepAtMs = targetAtMs
-        mainHandler.postDelayed(stepRunnable, delayMs)
+        mainHandler.postDelayed(stepRunnable, safeDelayMs)
+    }
+
+    private fun showStageReminder(stepLabel: String) {
+        val now = SystemClock.elapsedRealtime()
+        val sameStep = stepLabel == lastStageReminderText
+        if (sameStep && now - lastStageReminderAtMs < STAGE_REMINDER_MIN_INTERVAL_MS) {
+            return
+        }
+
+        lastStageReminderText = stepLabel
+        lastStageReminderAtMs = now
+        showScreenReminder(stepLabel)
     }
 
     private fun failWorkflow(reason: String) {
@@ -1619,8 +1798,16 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         nextSelfReturnActionAtMs = 0L
         walletCloseAttemptedForFinalReturn = false
         lastEventPackageName = null
+        lastShizukuForegroundPackage = null
+        lastShizukuQueryAtMs = 0L
         lastUsageForegroundPackage = null
         lastUsageQueryAtMs = 0L
+        lastStageReminderText = null
+        lastStageReminderAtMs = 0L
+        finishHintFirstSeenAtMs = 0L
+        walletSettleUntilMs = 0L
+        nextWalletSettleNotifyAtMs = 0L
+        rewardResultForegroundConfirmRetry = 0
 
         ocrInProgress = false
         nextAllowedScreenshotAtMs = 0L
@@ -1833,14 +2020,14 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
     private enum class AutomationStep(val label: String) {
         IDLE("空闲"),
-        WAIT_WALLET_HOME("识别“领视频会员”"),
-        WAIT_WATCH_BUTTON("识别“看10秒领会员”"),
-        WAIT_JUMP_CONFIRM("识别“点击立即跳转”"),
-        WAIT_EXTERNAL_SWITCH("确认外部应用跳转"),
+        WAIT_WALLET_HOME("钱包首页阶段"),
+        WAIT_WATCH_BUTTON("任务入口阶段"),
+        WAIT_JUMP_CONFIRM("跳转确认阶段"),
+        WAIT_EXTERNAL_SWITCH("等待外部应用切换"),
         WAIT_EXTERNAL_COUNTDOWN("外部应用停留中"),
         RETURN_TO_WALLET("返回小米钱包"),
-        WAIT_REWARD_ENTRY("识别奖励弹窗“开”"),
-        WAIT_REWARD_RESULT("识别奖励结果弹窗"),
+        WAIT_REWARD_ENTRY("奖励弹窗阶段"),
+        WAIT_REWARD_RESULT("结果判断阶段"),
         RETURN_TO_SELF_APP_FINAL("收尾返回本应用"),
         RETURN_TO_WALLET_FINAL("收尾返回小米钱包")
     }
@@ -1852,11 +2039,17 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private const val EXTERNAL_WAIT_MIN_MS = 11_000L
         private const val EXTERNAL_WAIT_MAX_MS = 15_000L
         private const val EXTERNAL_PROGRESS_INTERVAL_MS = 2_000L
+        private const val WALLET_SETTLE_WAIT_MS = 3_500L
+        private const val WALLET_SETTLE_PROGRESS_INTERVAL_MS = 1_200L
+        private const val REWARD_RESULT_FOREGROUND_CONFIRM_MAX_RETRY = 4
+        private const val REWARD_RESULT_FOREGROUND_CONFIRM_INTERVAL_MS = 1_100L
 
         private const val OCR_SCREENSHOT_MIN_INTERVAL_MS = 1_000L
         private const val OCR_COOLDOWN_RETRY_MIN_MS = 900L
         private const val OCR_COOLDOWN_LOG_INTERVAL_MS = 1_500L
-        private const val EVENT_HANDLE_MIN_INTERVAL_MS = 850L
+        private const val EVENT_HANDLE_MIN_INTERVAL_MS = 1200L
+        private const val MIN_STEP_DELAY_MS = 900L
+        private const val STAGE_REMINDER_MIN_INTERVAL_MS = 1500L
         private const val WATCH_BUTTON_LOOSE_MATCH_RETRY_THRESHOLD = 4
         private const val NODE_MATCH_MIN_SCORE = 145
         private const val OCR_MATCH_MIN_SCORE = 150
@@ -1864,6 +2057,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private const val RETURN_SELF_MAX_RETRY = 8
         private const val RETURN_SELF_RETRY_MS = 900L
         private const val RETURN_SELF_ACTION_INTERVAL_MS = 1_100L
+        private const val FINISH_CONFIRM_WAIT_MS = 3_000L
         private const val RETURN_WALLET_GESTURE_ONLY_MAX_ATTEMPT = 2
         private const val RETURN_WALLET_GESTURE_TRY_MAX_ATTEMPT = 6
         private const val RETURN_WALLET_SHIZUKU_ONLY_MAX_ATTEMPT = 2
@@ -1872,6 +2066,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private const val RETURN_WALLET_BACK_HOME_RETRY_THRESHOLD = 6
         private const val RETURN_FINAL_MAX_RETRY = 8
         private const val RETURN_FINAL_RETRY_MS = 900L
+        private const val SHIZUKU_TOP_QUERY_INTERVAL_MS = 500L
         private const val USAGE_TOP_QUERY_INTERVAL_MS = 650L
         private const val TASK_SWITCH_GESTURE_Y_RATIO = 0.95f
         private const val TASK_SWITCH_GESTURE_START_RIGHT_RATIO = 0.86f
@@ -1930,8 +2125,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private val FINISH_REWARD_KEYWORDS = listOf(
             "开提醒",
             "會員不漏領",
-            "会员不漏领",
-            "视频会员时长"
+            "会员不漏领"
         )
     }
 }

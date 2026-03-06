@@ -24,6 +24,13 @@ object ShizukuBridge {
 
     private const val SHIZUKU_MANAGER_PACKAGE = "moe.shizuku.privileged.api"
     private val PACKAGE_NAME_REGEX = Regex("^[a-zA-Z0-9._]+$")
+    private val FOREGROUND_PACKAGE_PATTERNS = listOf(
+        Regex("""mCurrentFocus.+?\s([A-Za-z0-9._]+)/[A-Za-z0-9_.$]+"""),
+        Regex("""mFocusedApp.+?\s([A-Za-z0-9._]+)/[A-Za-z0-9_.$]+"""),
+        Regex("""topResumedActivity.+?\s([A-Za-z0-9._]+)/[A-Za-z0-9_.$]+"""),
+        Regex("""mResumedActivity.+?\s([A-Za-z0-9._]+)/[A-Za-z0-9_.$]+"""),
+        Regex("""ActivityRecord\{[^}]*\s([A-Za-z0-9._]+)/[A-Za-z0-9_.$]+""")
+    )
 
     fun queryState(context: Context): ShizukuState {
         val installed = isShizukuInstalled(context)
@@ -139,6 +146,28 @@ object ShizukuBridge {
         )
     }
 
+    fun resolveForegroundPackage(context: Context): String? {
+        val windowResult = runCommandIfReady(
+            context = context,
+            command = "dumpsys window windows",
+            actionLabel = "query foreground app"
+        )
+        if (windowResult.success) {
+            parseForegroundPackage(windowResult.message)?.let { return it }
+        }
+
+        val activityResult = runCommandIfReady(
+            context = context,
+            command = "dumpsys activity activities",
+            actionLabel = "query foreground app"
+        )
+        if (activityResult.success) {
+            parseForegroundPackage(activityResult.message)?.let { return it }
+        }
+
+        return null
+    }
+
     private fun runCommandIfReady(
         context: Context,
         command: String,
@@ -204,6 +233,22 @@ object ShizukuBridge {
                 message = "${actionLabel}失败：${throwable.message.orEmpty()}"
             )
         }
+    }
+
+    private fun parseForegroundPackage(output: String): String? {
+        val content = output.trim()
+        if (content.isEmpty()) {
+            return null
+        }
+
+        FOREGROUND_PACKAGE_PATTERNS.forEach { regex ->
+            val pkg = regex.find(content)?.groupValues?.getOrNull(1).orEmpty()
+            if (pkg.isNotBlank() && isValidPackageName(pkg)) {
+                return pkg
+            }
+        }
+
+        return null
     }
 
     private fun isShizukuInstalled(context: Context): Boolean {

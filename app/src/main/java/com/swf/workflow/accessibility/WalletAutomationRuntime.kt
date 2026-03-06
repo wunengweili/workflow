@@ -94,8 +94,8 @@ object WalletAutomationRuntime {
         WalletAutomationRequestStore.clearPending(context)
         val current = _state.value
         _state.value = current.copy(
-            isRunning = false,
-            currentStep = "已停止",
+            isRunning = true,
+            currentStep = "停止中",
             stopRequested = true
         )
         appendLogLocked("收到手动停止指令")

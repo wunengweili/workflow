@@ -312,11 +312,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshAccessibilityState()
-
-        if (WalletAutomationRuntime.state.value.isRunning) {
-            WalletAutomationRuntime.requestStop(this)
-            showToast(getString(R.string.automation_stop_on_return_home))
-        }
     }
 
     override fun onDestroy() {
