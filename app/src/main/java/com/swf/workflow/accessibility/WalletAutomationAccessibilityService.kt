@@ -745,7 +745,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         completionReason = message
         stopReason = null
         walletCloseAttemptedForFinalReturn = false
-        WalletAutomationRuntime.info("检测到完成态，准备关闭小米钱包并返回本应用")
+        WalletAutomationRuntime.info("检测到完成态，准备返回本应用并在后台关闭小米钱包")
         transitTo(AutomationStep.RETURN_TO_SELF_APP_FINAL, triggerAfterMs = 220)
     }
 
@@ -771,28 +771,25 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         val reason = completionReason ?: "任务处理完成"
 
         if (isSelfAppOnTop()) {
-            finishAsCompleted("$reason，已返回本应用")
-            return
-        }
-
-        if (!walletCloseAttemptedForFinalReturn) {
-            walletCloseAttemptedForFinalReturn = true
-            if (isWalletOnTop()) {
+            if (!walletCloseAttemptedForFinalReturn) {
+                walletCloseAttemptedForFinalReturn = true
                 val closeWalletResult = ShizukuBridge.forceStopPackage(this, WALLET_PACKAGE)
                 when {
                     closeWalletResult.success -> {
-                        WalletAutomationRuntime.info("任务结束，已通过Shizuku关闭小米钱包")
+                        WalletAutomationRuntime.info("已切回本应用，后台关闭小米钱包成功")
                     }
 
                     closeWalletResult.executed -> {
-                        WalletAutomationRuntime.info("Shizuku关闭小米钱包失败：${closeWalletResult.message}")
+                        WalletAutomationRuntime.info("已切回本应用，但后台关闭小米钱包失败：${closeWalletResult.message}")
                     }
 
                     else -> {
-                        WalletAutomationRuntime.info("Shizuku未就绪，跳过关闭小米钱包（${closeWalletResult.message}）")
+                        WalletAutomationRuntime.info("已切回本应用，Shizuku未就绪，跳过关闭小米钱包（${closeWalletResult.message}）")
                     }
                 }
             }
+            finishAsCompleted("$reason，已返回本应用")
+            return
         }
 
         val now = SystemClock.elapsedRealtime()
