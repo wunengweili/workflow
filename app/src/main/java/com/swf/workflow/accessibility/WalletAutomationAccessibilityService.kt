@@ -513,7 +513,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleExternalCountdownFinished() {
-        val externalPackage = resolveExternalPackageForClose()
+        val externalPackage: String? = null
         if (!externalPackage.isNullOrBlank()) {
             val forceStopResult = ShizukuBridge.forceStopPackage(this, externalPackage)
             when {
@@ -538,9 +538,30 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         )
     }
 
+    private fun forceStopExternalAfterWalletReturnIfNeeded() {
+        val externalPackage = externalPackageName ?: return
+        if (!isClosableExternalPackage(externalPackage)) {
+            return
+        }
+
+        val forceStopResult = ShizukuBridge.forceStopPackage(this, externalPackage)
+        when {
+            forceStopResult.success -> {
+                WalletAutomationRuntime.info("已回到小米钱包，Shizuku关闭外部应用成功：$externalPackage")
+            }
+            forceStopResult.executed -> {
+                WalletAutomationRuntime.info("已回到小米钱包，但关闭外部应用失败：${forceStopResult.message}")
+            }
+            else -> {
+                WalletAutomationRuntime.info("已回到小米钱包，Shizuku未就绪，跳过关闭外部应用（${forceStopResult.message}）")
+            }
+        }
+    }
+
     private fun handleReturnToWalletStep() {
         if (isWalletOnTop()) {
             removeQuickActionOverlay()
+            forceStopExternalAfterWalletReturnIfNeeded()
             WalletAutomationRuntime.info("已确认回到小米钱包，等待奖励弹窗")
             transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 2200)
             return
@@ -588,7 +609,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         if (clickByKeywords(REWARD_ENTRY_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
             WalletAutomationRuntime.info("已点击奖励弹窗“开”按钮($trigger)")
-            transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = 1400)
+            transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS)
             return
         }
 
@@ -597,12 +618,18 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 stepLabel = "奖励弹窗“开”按钮",
                 onSuccess = {
                     WalletAutomationRuntime.info("OCR识别成功，已点击奖励弹窗“开”按钮")
-                    transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = 1400)
+                    transitTo(
+                        AutomationStep.WAIT_REWARD_RESULT,
+                        triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS
+                    )
                 },
                 onFailure = {
                     if (currentRetry >= 3 && clickRewardCenterFallback()) {
                         WalletAutomationRuntime.info("OCR未命中，使用中部兜底点位点击“开”")
-                        transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = 1400)
+                        transitTo(
+                            AutomationStep.WAIT_REWARD_RESULT,
+                            triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS
+                        )
                         return@tryClickByOcr
                     }
                     retryOrFail(
@@ -2040,6 +2067,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private const val WALLET_SETTLE_PROGRESS_INTERVAL_MS = 1_200L
         private const val REWARD_RESULT_FOREGROUND_CONFIRM_MAX_RETRY = 4
         private const val REWARD_RESULT_FOREGROUND_CONFIRM_INTERVAL_MS = 1_100L
+        private const val REWARD_ENTRY_ANIMATION_WAIT_MS = 3_000L
 
         private const val OCR_SCREENSHOT_MIN_INTERVAL_MS = 1_000L
         private const val OCR_COOLDOWN_RETRY_MIN_MS = 900L
