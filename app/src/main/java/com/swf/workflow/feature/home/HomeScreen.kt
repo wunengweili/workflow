@@ -13,7 +13,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.SettingsAccessibility
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
@@ -24,7 +25,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,6 +130,12 @@ private fun StatusCard(
     onOpenAccessibilitySettings: () -> Unit,
     onOpenUsageAccessSettings: () -> Unit
 ) {
+    val allPermissionsGranted = accessibilityEnabled && usageAccessEnabled
+    var expanded by rememberSaveable { mutableStateOf(!allPermissionsGranted) }
+    LaunchedEffect(allPermissionsGranted) {
+        expanded = !allPermissionsGranted
+    }
+
     val iconTint = if (accessibilityEnabled) Color(0xFF0B8A56) else Color(0xFFBC5D07)
     val badgeColor = if (accessibilityEnabled) Color(0xFFE4F8EE) else Color(0xFFFFF0E1)
     val statusLabel = if (accessibilityEnabled) {
@@ -155,160 +168,171 @@ private fun StatusCard(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(Color(0xFFF0F3FA))
-                        .padding(10.dp)
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (allPermissionsGranted) Color(0xFFE4F8EE) else Color(0xFFFFF0E1)
                 ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (allPermissionsGranted) {
+                                Icons.Rounded.Verified
+                            } else {
+                                Icons.Rounded.WarningAmber
+                            },
+                            contentDescription = null,
+                            tint = if (allPermissionsGranted) Color(0xFF0B8A56) else Color(0xFFBC5D07)
+                        )
+                        Text(
+                            text = if (allPermissionsGranted) "所有权限已授权" else "部分权限未授权",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (allPermissionsGranted) Color(0xFF0B8A56) else Color(0xFFBC5D07),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+                Box(modifier = Modifier.weight(1f))
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(text = if (expanded) "收起" else "展开")
                     Icon(
-                        imageVector = Icons.Rounded.SettingsAccessibility,
-                        contentDescription = null,
-                        tint = Color(0xFF3D5AFE)
+                        imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = null
                     )
                 }
-                Column {
+            }
+
+            if (expanded) {
+                StatusSection(
+                    title = stringResource(id = R.string.a11y_card_title),
+                    subtitle = stringResource(id = R.string.a11y_card_subtitle),
+                    statusText = statusLabel,
+                    enabled = accessibilityEnabled,
+                    badgeColor = badgeColor,
+                    iconTint = iconTint,
+                    buttonText = stringResource(id = R.string.a11y_action_open_settings),
+                    buttonContainerColor = Color(0xFF1F2A44),
+                    onClickAction = onOpenAccessibilitySettings
+                )
+
+                StatusSection(
+                    title = stringResource(id = R.string.usage_access_card_title),
+                    subtitle = stringResource(id = R.string.usage_access_card_subtitle),
+                    statusText = usageStatusLabel,
+                    enabled = usageAccessEnabled,
+                    badgeColor = usageBadgeColor,
+                    iconTint = usageIconTint,
+                    buttonText = stringResource(id = R.string.usage_access_action_open_settings),
+                    buttonContainerColor = Color(0xFF394867),
+                    onClickAction = onOpenUsageAccessSettings
+                )
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = stringResource(id = R.string.a11y_card_title),
-                        style = MaterialTheme.typography.titleMedium,
+                        text = stringResource(id = R.string.shizuku_card_title),
+                        style = MaterialTheme.typography.titleSmall,
                         color = Color(0xFF1D2433)
                     )
-                    Text(
-                        text = stringResource(id = R.string.a11y_card_subtitle),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF59627A)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = shizukuBadgeColor
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (shizukuReady) {
+                                    Icons.Rounded.Verified
+                                } else {
+                                    Icons.Rounded.WarningAmber
+                                },
+                                contentDescription = null,
+                                tint = shizukuIconTint
+                            )
+                            Text(
+                                text = shizukuStatusText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = shizukuIconTint,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
             }
+        }
+    }
+}
 
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = badgeColor
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = if (accessibilityEnabled) {
-                            Icons.Rounded.Verified
-                        } else {
-                            Icons.Rounded.WarningAmber
-                        },
-                        contentDescription = null,
-                        tint = iconTint
-                    )
-                    Text(
-                        text = statusLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = iconTint,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
+@Composable
+private fun StatusSection(
+    title: String,
+    subtitle: String,
+    statusText: String,
+    enabled: Boolean,
+    badgeColor: Color,
+    iconTint: Color,
+    buttonText: String,
+    buttonContainerColor: Color,
+    onClickAction: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = Color(0xFF1D2433)
+        )
 
-            if (!accessibilityEnabled) {
-                Button(
-                    onClick = onOpenAccessibilitySettings,
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF1F2A44)
-                    )
-                ) {
-                    Text(text = stringResource(id = R.string.a11y_action_open_settings))
-                }
-            }
-
+        if (!enabled) {
             Text(
-                text = stringResource(id = R.string.usage_access_card_title),
-                style = MaterialTheme.typography.titleSmall,
-                color = Color(0xFF1D2433)
-            )
-            Text(
-                text = stringResource(id = R.string.usage_access_card_subtitle),
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF59627A)
             )
+        }
 
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = usageBadgeColor
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = badgeColor
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = if (usageAccessEnabled) {
-                            Icons.Rounded.Verified
-                        } else {
-                            Icons.Rounded.WarningAmber
-                        },
-                        contentDescription = null,
-                        tint = usageIconTint
-                    )
-                    Text(
-                        text = usageStatusLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = usageIconTint,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                Icon(
+                    imageVector = if (enabled) {
+                        Icons.Rounded.Verified
+                    } else {
+                        Icons.Rounded.WarningAmber
+                    },
+                    contentDescription = null,
+                    tint = iconTint
+                )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = iconTint,
+                    fontWeight = FontWeight.Medium
+                )
             }
+        }
 
-            if (!usageAccessEnabled) {
-                Button(
-                    onClick = onOpenUsageAccessSettings,
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF394867)
-                    )
-                ) {
-                    Text(text = stringResource(id = R.string.usage_access_action_open_settings))
-                }
-            }
-
-            Text(
-                text = stringResource(id = R.string.shizuku_card_title),
-                style = MaterialTheme.typography.titleSmall,
-                color = Color(0xFF1D2433)
-            )
-            Text(
-                text = stringResource(id = R.string.shizuku_card_subtitle),
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF59627A)
-            )
-
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = shizukuBadgeColor
+        if (!enabled) {
+            Button(
+                onClick = onClickAction,
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = buttonContainerColor
+                )
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = if (shizukuReady) {
-                            Icons.Rounded.Verified
-                        } else {
-                            Icons.Rounded.WarningAmber
-                        },
-                        contentDescription = null,
-                        tint = shizukuIconTint
-                    )
-                    Text(
-                        text = shizukuStatusText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = shizukuIconTint,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                Text(text = buttonText)
             }
         }
     }
