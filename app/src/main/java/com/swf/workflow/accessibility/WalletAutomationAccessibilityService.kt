@@ -131,7 +131,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 val now = SystemClock.elapsedRealtime()
-                if (now - lastEventHandledAtMs < EVENT_HANDLE_MIN_INTERVAL_MS) {
+                if (now - lastEventHandledAtMs < eventHandleMinIntervalForCurrentStep()) {
                     return
                 }
                 lastEventHandledAtMs = now
@@ -171,12 +171,16 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         walletCloseAttemptedForFinalReturn = false
 
         WalletAutomationRuntime.step(AutomationStep.WAIT_WALLET_HOME.label, message)
-        transitTo(AutomationStep.WAIT_WALLET_HOME, triggerAfterMs = 1000, logStep = false)
+        transitTo(AutomationStep.WAIT_WALLET_HOME, triggerAfterMs = stageRetryDelayMs(), logStep = false)
     }
 
     private fun runCurrentStep(trigger: String) {
         if (WalletAutomationRuntime.consumeStopRequest()) {
             requestStopAndReturnToWallet("用户主动停止流程")
+            return
+        }
+
+        if (shouldWaitScheduledStep(trigger)) {
             return
         }
 
@@ -199,11 +203,22 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun shouldWaitScheduledStep(trigger: String): Boolean {
+        if (trigger != "event") {
+            return false
+        }
+        val scheduledAt = scheduledStepAtMs
+        if (scheduledAt <= 0L) {
+            return false
+        }
+        return SystemClock.elapsedRealtime() < scheduledAt
+    }
+
     private fun handleWalletHomeStep(trigger: String) {
         if (!isWalletOnTop()) {
             retryOrFail(
                 maxRetry = 20,
-                nextDelayMs = 700,
+                nextDelayMs = stageRetryDelayMs(),
                 failMessage = "未检测到小米钱包首页，流程已停止",
                 retryHint = "等待进入小米钱包首页"
             )
@@ -218,7 +233,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (clickByKeywords(FIRST_STEP_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
             announceHit("已点击“领视频会员”（节点）")
             WalletAutomationRuntime.info("已点击“领视频会员”($trigger)")
-            transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = 1200)
+            transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = stageRetryDelayMs())
             return
         }
 
@@ -228,12 +243,12 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 onSuccess = {
                     announceHit("已点击“领视频会员”（OCR）")
                     WalletAutomationRuntime.info("OCR识别成功，已点击“领视频会员”")
-                    transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = 1200)
+                    transitTo(AutomationStep.WAIT_WATCH_BUTTON, triggerAfterMs = stageRetryDelayMs())
                 },
                 onFailure = {
                     retryOrFail(
                         maxRetry = 20,
-                        nextDelayMs = 700,
+                        nextDelayMs = stageRetryDelayMs(),
                         failMessage = "未找到“领视频会员”，流程已停止",
                         retryHint = "识别“领视频会员”按钮中"
                     )
@@ -245,7 +260,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 8,
-            nextDelayMs = 900,
+            nextDelayMs = stageRetryDelayMs(),
             failMessage = "系统不支持OCR，流程已停止",
             retryHint = "设备不支持截图识别"
         )
@@ -255,7 +270,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (!isWalletOnTop()) {
             retryOrFail(
                 maxRetry = 12,
-                nextDelayMs = 800,
+                nextDelayMs = stageRetryDelayMs(),
                 failMessage = "当前不在小米钱包，流程已停止",
                 retryHint = "等待回到领取页"
             )
@@ -268,7 +283,14 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         if (clickByKeywords(CLICK_CLAIM_MEMBER_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
             announceHit("已点击“点击领会员”（节点）")
             WalletAutomationRuntime.info("已点击“点击领会员”($trigger)，等待奖励弹窗")
-            transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 1000)
+            transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = rewardEntryPrepareDelayMs())
+            return
+        }
+
+        if (rollbackByNode(stageName = "watch-button->home", keywords = FIRST_STEP_KEYWORDS) {
+                scheduleStep(stageRetryDelayMs())
+            }
+        ) {
             return
         }
 
@@ -284,11 +306,11 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     if (clickNode(nodeHit.node)) {
                         announceHit("已点击“看10秒领会员”（节点）")
                         WalletAutomationRuntime.info("已点击“看10秒领会员”($trigger)")
-                        transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 900)
+                        transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = jumpConfirmDelayMs())
                     } else {
                         retryOrFail(
                             maxRetry = 20,
-                            nextDelayMs = 700,
+                            nextDelayMs = stageRetryDelayMs(),
                             failMessage = "命中“看10秒”但点击失败，流程已停止",
                             retryHint = "命中后点击失败，准备重试"
                         )
@@ -337,7 +359,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     if (watchHit != null && performGestureClick(watchHit.rect)) {
                         announceHit("已点击“看10秒领会员”（OCR）")
                         WalletAutomationRuntime.info("OCR识别成功，已点击“看10秒领会员”")
-                        transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 900)
+                        transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = jumpConfirmDelayMs())
                         return@runOcrSnapshot
                     }
 
@@ -347,7 +369,20 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     ) {
                         announceHit("已点击“点击领会员”（OCR）")
                         WalletAutomationRuntime.info("OCR识别成功，已点击“点击领会员”")
-                        transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 1000)
+                        transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = rewardEntryPrepareDelayMs())
+                        return@runOcrSnapshot
+                    }
+
+                    val firstStepRect = findBestOcrTargetRect(
+                        text = text,
+                        keywords = FIRST_STEP_KEYWORDS,
+                        width = width,
+                        height = height
+                    )
+                    if (firstStepRect != null && performGestureClick(firstStepRect)) {
+                        WalletAutomationRuntime.info("Stage rollback by OCR: watch-button -> home")
+                        currentRetry = 0
+                        scheduleStep(stageRetryDelayMs())
                         return@runOcrSnapshot
                     }
 
@@ -358,7 +393,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     }
                     retryOrFail(
                         maxRetry = 20,
-                        nextDelayMs = 700,
+                        nextDelayMs = stageRetryDelayMs(),
                         failMessage = "未识别到“看10秒/点击领会员/开提醒”关键文案，流程已停止",
                         retryHint = retryHint
                     )
@@ -371,7 +406,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     }
                     retryOrFail(
                         maxRetry = 20,
-                        nextDelayMs = 700,
+                        nextDelayMs = stageRetryDelayMs(),
                         failMessage = "领取页OCR识别失败，流程已停止",
                         retryHint = retryHint
                     )
@@ -383,17 +418,48 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 8,
-            nextDelayMs = 900,
+            nextDelayMs = stageRetryDelayMs(),
             failMessage = "系统不支持OCR，流程已停止",
             retryHint = "设备不支持截图识别"
         )
     }
 
     private fun handleJumpConfirmStep(trigger: String) {
+        val foregroundPkg = currentForegroundPackage(forceRefresh = true)
+        if (isClosableExternalPackage(foregroundPkg)) {
+            WalletAutomationRuntime.info("Foreground switched before jump tap, continue external countdown: $foregroundPkg")
+            startExternalCountdown(foregroundPkg, "$trigger-foreground")
+            return
+        }
+
+        if (containsKeywordsByNode(FINISH_REWARD_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
+            completeAndReturnToSelf("Detected finish keywords while waiting jump confirm")
+            return
+        }
+
+        val watchHit = detectWatchStageNodeHit(SECOND_STEP_STRICT_KEYWORDS + SECOND_STEP_LOOSE_KEYWORDS)
+        if (watchHit != null) {
+            when (watchHit.type) {
+                WatchStageHitType.FINISH -> {
+                    completeAndReturnToSelf("Detected finish keywords while waiting jump confirm")
+                    return
+                }
+
+                WatchStageHitType.WATCH -> {
+                    if (clickNode(watchHit.node)) {
+                        WalletAutomationRuntime.info("Re-clicked watch button in jump-confirm stage, keep waiting jump confirm")
+                        currentRetry = 0
+                        scheduleStep(jumpConfirmDelayMs())
+                        return
+                    }
+                }
+            }
+        }
+
         if (clickByKeywords(THIRD_STEP_KEYWORDS, preferredPackage = null)) {
             announceHit("已点击“点击立即跳转”（节点）")
             WalletAutomationRuntime.info("已点击“点击立即跳转”($trigger)")
-            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
+            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = jumpConfirmDelayMs())
             return
         }
 
@@ -403,12 +469,12 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 onSuccess = {
                     announceHit("已点击“点击立即跳转”（OCR）")
                     WalletAutomationRuntime.info("OCR识别成功，已点击“点击立即跳转”")
-                    transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
+                    transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = jumpConfirmDelayMs())
                 },
                 onFailure = {
                     retryOrFail(
                         maxRetry = 20,
-                        nextDelayMs = 700,
+                        nextDelayMs = jumpConfirmDelayMs(),
                         failMessage = "未找到“点击立即跳转”，流程已停止",
                         retryHint = "识别“点击立即跳转”按钮中"
                     )
@@ -420,7 +486,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 8,
-            nextDelayMs = 900,
+            nextDelayMs = jumpConfirmDelayMs(),
             failMessage = "系统不支持OCR，流程已停止",
             retryHint = "设备不支持截图识别"
         )
@@ -441,7 +507,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             }
             retryOrFail(
                 maxRetry = 16,
-                nextDelayMs = 1200,
+                nextDelayMs = jumpConfirmDelayMs(),
                 failMessage = "点击跳转后未切换到外部应用，流程已停止",
                 retryHint = retryHint
             )
@@ -453,9 +519,16 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             preferredPackage = null
         )
         if (jumpStillVisible) {
+            WalletAutomationRuntime.info("Jump text is still visible, return to jump-confirm stage")
+            transitTo(
+                step = AutomationStep.WAIT_JUMP_CONFIRM,
+                triggerAfterMs = jumpConfirmDelayMs(),
+                logStep = false
+            )
+            return
             retryOrFail(
                 maxRetry = 16,
-                nextDelayMs = 1200,
+                nextDelayMs = jumpConfirmDelayMs(),
                 failMessage = "点击跳转后页面未变化，流程已停止",
                 retryHint = "等待“点击立即跳转”文案消失"
             )
@@ -464,7 +537,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 16,
-            nextDelayMs = 1200,
+            nextDelayMs = jumpConfirmDelayMs(),
             failMessage = "点击跳转后无法确认外部应用，流程已停止",
             retryHint = "等待外部应用切换"
         )
@@ -563,7 +636,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             removeQuickActionOverlay()
             forceStopExternalAfterWalletReturnIfNeeded()
             WalletAutomationRuntime.info("已确认回到小米钱包，等待奖励弹窗")
-            transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = 2200)
+            transitTo(AutomationStep.WAIT_REWARD_ENTRY, triggerAfterMs = rewardEntryPrepareDelayMs())
             return
         }
 
@@ -579,7 +652,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 12,
-            nextDelayMs = 1100,
+            nextDelayMs = stageRetryDelayMs(),
             failMessage = "多次尝试后仍未回到小米钱包，流程已停止",
             retryHint = "等待返回小米钱包"
         )
@@ -590,7 +663,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             WalletLauncher.launchMiWallet(this)
             retryOrFail(
                 maxRetry = 12,
-                nextDelayMs = 900,
+                nextDelayMs = stageRetryDelayMs(),
                 failMessage = "返回钱包后未进入目标页面，流程已停止",
                 retryHint = "等待小米钱包页面恢复"
             )
@@ -603,13 +676,13 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             announceHit("已点击“点击领会员”（节点）")
             WalletAutomationRuntime.info("已点击“点击领会员”($trigger)，等待奖励弹窗“开”")
             currentRetry = 0
-            scheduleStep(1000)
+            scheduleStep(rewardEntryPrepareDelayMs())
             return
         }
 
         if (clickByKeywords(REWARD_ENTRY_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
             WalletAutomationRuntime.info("已点击奖励弹窗“开”按钮($trigger)")
-            transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS)
+            transitTo(AutomationStep.WAIT_REWARD_RESULT, triggerAfterMs = rewardResultAnimationDelayMs())
             return
         }
 
@@ -620,7 +693,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     WalletAutomationRuntime.info("OCR识别成功，已点击奖励弹窗“开”按钮")
                     transitTo(
                         AutomationStep.WAIT_REWARD_RESULT,
-                        triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS
+                        triggerAfterMs = rewardResultAnimationDelayMs()
                     )
                 },
                 onFailure = {
@@ -628,13 +701,13 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                         WalletAutomationRuntime.info("OCR未命中，使用中部兜底点位点击“开”")
                         transitTo(
                             AutomationStep.WAIT_REWARD_RESULT,
-                            triggerAfterMs = REWARD_ENTRY_ANIMATION_WAIT_MS
+                            triggerAfterMs = rewardResultAnimationDelayMs()
                         )
                         return@tryClickByOcr
                     }
                     retryOrFail(
                         maxRetry = 16,
-                        nextDelayMs = 900,
+                        nextDelayMs = rewardEntryPrepareDelayMs(),
                         failMessage = "未找到奖励弹窗“开”按钮，流程已停止",
                         retryHint = "识别奖励弹窗“开”按钮中"
                     )
@@ -646,7 +719,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 8,
-            nextDelayMs = 900,
+            nextDelayMs = rewardEntryPrepareDelayMs(),
             failMessage = "系统不支持OCR，流程已停止",
             retryHint = "设备不支持截图识别"
         )
@@ -670,23 +743,34 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             val finalForeground = foregroundPkg.orEmpty().ifBlank { "未知" }
             WalletAutomationRuntime.info("奖励结果页确认已离开钱包（$finalForeground），回到跳转检测")
             rewardResultForegroundConfirmRetry = 0
-            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1100)
+            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = jumpConfirmDelayMs())
             return
         }
         rewardResultForegroundConfirmRetry = 0
+
+        if (rollbackByNode(stageName = "reward-result->reward-entry", keywords = REWARD_ENTRY_KEYWORDS) {
+                transitTo(
+                    step = AutomationStep.WAIT_REWARD_RESULT,
+                    triggerAfterMs = rewardResultAnimationDelayMs(),
+                    logStep = false
+                )
+            }
+        ) {
+            return
+        }
 
         if (clickByKeywords(CONTINUE_REWARD_KEYWORDS, preferredPackage = WALLET_PACKAGE)) {
             finishHintFirstSeenAtMs = 0L
             roundCount += 1
             WalletAutomationRuntime.info("已点击继续领取按钮($trigger)，进入第${roundCount}轮")
-            transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 1100)
+            transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = jumpConfirmDelayMs())
             return
         }
 
         if (clickByKeywords(THIRD_STEP_KEYWORDS, preferredPackage = null)) {
             finishHintFirstSeenAtMs = 0L
             WalletAutomationRuntime.info("奖励结果页检测到“点击立即跳转”，继续外部流程")
-            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
+            transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = jumpConfirmDelayMs())
             return
         }
 
@@ -701,7 +785,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
 
         retryOrFail(
             maxRetry = 10,
-            nextDelayMs = 900,
+            nextDelayMs = stageRetryDelayMs(),
             failMessage = "系统不支持OCR，流程已停止",
             retryHint = "设备不支持截图识别"
         )
@@ -721,7 +805,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     finishHintFirstSeenAtMs = 0L
                     roundCount += 1
                     WalletAutomationRuntime.info("OCR识别成功，已点击继续领取，进入第${roundCount}轮")
-                    transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = 1100)
+                    transitTo(AutomationStep.WAIT_JUMP_CONFIRM, triggerAfterMs = jumpConfirmDelayMs())
                     return@runOcrSnapshot
                 }
 
@@ -734,7 +818,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                 if (jumpRect != null && performGestureClick(jumpRect)) {
                     finishHintFirstSeenAtMs = 0L
                     WalletAutomationRuntime.info("OCR识别成功，已点击“点击立即跳转”")
-                    transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = 1000)
+                    transitTo(AutomationStep.WAIT_EXTERNAL_SWITCH, triggerAfterMs = jumpConfirmDelayMs())
                     return@runOcrSnapshot
                 }
 
@@ -749,9 +833,25 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
                     return@runOcrSnapshot
                 }
 
+                val rewardEntryRect = findBestOcrTargetRect(
+                    text = text,
+                    keywords = REWARD_ENTRY_KEYWORDS,
+                    width = width,
+                    height = height
+                )
+                if (rewardEntryRect != null && performGestureClick(rewardEntryRect)) {
+                    WalletAutomationRuntime.info("Stage rollback by OCR: reward-result -> reward-entry")
+                    transitTo(
+                        step = AutomationStep.WAIT_REWARD_RESULT,
+                        triggerAfterMs = rewardResultAnimationDelayMs(),
+                        logStep = false
+                    )
+                    return@runOcrSnapshot
+                }
+
                 retryOrFail(
                     maxRetry = 16,
-                    nextDelayMs = 900,
+                    nextDelayMs = stageRetryDelayMs(),
                     failMessage = "未识别到结果弹窗按钮，流程已停止",
                     retryHint = "识别奖励结果弹窗中"
                 )
@@ -759,7 +859,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             onFailure = {
                 retryOrFail(
                     maxRetry = 16,
-                    nextDelayMs = 900,
+                    nextDelayMs = stageRetryDelayMs(),
                     failMessage = "奖励结果OCR识别失败，流程已停止",
                     retryHint = "OCR识别奖励结果失败"
                 )
@@ -1285,6 +1385,21 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         return findBestNodeCandidate(keywords, preferredPackage, preferCenter) != null
     }
 
+    private fun rollbackByNode(
+        stageName: String,
+        keywords: List<String>,
+        preferredPackage: String? = WALLET_PACKAGE,
+        onRollbackHit: () -> Unit
+    ): Boolean {
+        if (!clickByKeywords(keywords, preferredPackage = preferredPackage)) {
+            return false
+        }
+        WalletAutomationRuntime.info("Stage rollback hit: $stageName")
+        currentRetry = 0
+        onRollbackHit()
+        return true
+    }
+
     private fun watchStageKeywordsForCurrentRetry(): List<String> {
         return if (currentRetry >= WATCH_BUTTON_LOOSE_MATCH_RETRY_THRESHOLD) {
             SECOND_STEP_STRICT_KEYWORDS + SECOND_STEP_LOOSE_KEYWORDS
@@ -1694,6 +1809,12 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun clickNode(node: AccessibilityNodeInfo): Boolean {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (!bounds.isEmpty && performGestureClick(bounds)) {
+            return true
+        }
+
         var current: AccessibilityNodeInfo? = node
         while (current != null) {
             if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
@@ -1702,9 +1823,7 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             current = current.parent
         }
 
-        val bounds = Rect()
-        node.getBoundsInScreen(bounds)
-        return performGestureClick(bounds)
+        return false
     }
 
     private fun clickRewardCenterFallback(): Boolean {
@@ -1723,16 +1842,72 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
             return false
         }
 
-        val x = bounds.centerX().toFloat()
-        val y = bounds.centerY().toFloat()
+        val centerX = bounds.centerX()
+        val centerY = bounds.centerY()
+
+        val maxJitterX = minOf(
+            (bounds.width() * CLICK_CENTER_JITTER_RATIO).toInt().coerceAtLeast(1),
+            CLICK_CENTER_JITTER_MAX_PX
+        )
+        val maxJitterY = minOf(
+            (bounds.height() * CLICK_CENTER_JITTER_RATIO).toInt().coerceAtLeast(1),
+            CLICK_CENTER_JITTER_MAX_PX
+        )
+
+        val jitterX = Random.nextInt(-maxJitterX, maxJitterX + 1)
+        val jitterY = Random.nextInt(-maxJitterY, maxJitterY + 1)
+
+        val x = if (bounds.width() <= 2) {
+            centerX.toFloat()
+        } else {
+            (centerX + jitterX)
+                .coerceIn(bounds.left + 1, bounds.right - 1)
+                .toFloat()
+        }
+        val y = if (bounds.height() <= 2) {
+            centerY.toFloat()
+        } else {
+            (centerY + jitterY)
+                .coerceIn(bounds.top + 1, bounds.bottom - 1)
+                .toFloat()
+        }
+        val pressDuration = Random.nextLong(CLICK_DURATION_MIN_MS, CLICK_DURATION_MAX_MS + 1)
         val path = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 90)
+        val stroke = GestureDescription.StrokeDescription(path, 0, pressDuration)
         val gesture = GestureDescription.Builder()
             .addStroke(stroke)
             .build()
 
         return dispatchGesture(gesture, null, null)
     }
+
+    private fun eventHandleMinIntervalForCurrentStep(): Long {
+        return when (currentStep) {
+            AutomationStep.WAIT_JUMP_CONFIRM,
+            AutomationStep.WAIT_EXTERNAL_SWITCH -> FAST_EVENT_HANDLE_MIN_INTERVAL_MS
+
+            AutomationStep.WAIT_REWARD_ENTRY -> REWARD_ENTRY_EVENT_HANDLE_MIN_INTERVAL_MS
+            AutomationStep.WAIT_REWARD_RESULT -> REWARD_RESULT_EVENT_HANDLE_MIN_INTERVAL_MS
+            else -> DEFAULT_EVENT_HANDLE_MIN_INTERVAL_MS
+        }
+    }
+
+    private fun randomDelay(minMs: Long, maxMs: Long): Long {
+        if (maxMs <= minMs) {
+            return minMs
+        }
+        return Random.nextLong(minMs, maxMs + 1)
+    }
+
+    private fun stageRetryDelayMs(): Long = randomDelay(STAGE_RETRY_MIN_MS, STAGE_RETRY_MAX_MS)
+
+    private fun jumpConfirmDelayMs(): Long = randomDelay(JUMP_CONFIRM_MIN_MS, JUMP_CONFIRM_MAX_MS)
+
+    private fun rewardEntryPrepareDelayMs(): Long =
+        randomDelay(REWARD_ENTRY_PREPARE_MIN_MS, REWARD_ENTRY_PREPARE_MAX_MS)
+
+    private fun rewardResultAnimationDelayMs(): Long =
+        randomDelay(REWARD_ANIMATION_WAIT_MIN_MS, REWARD_ANIMATION_WAIT_MAX_MS)
 
     private fun retryOrFail(
         maxRetry: Int,
@@ -2066,19 +2241,33 @@ class WalletAutomationAccessibilityService : AccessibilityService() {
         private const val WALLET_SETTLE_WAIT_MS = 3_500L
         private const val WALLET_SETTLE_PROGRESS_INTERVAL_MS = 1_200L
         private const val REWARD_RESULT_FOREGROUND_CONFIRM_MAX_RETRY = 4
-        private const val REWARD_RESULT_FOREGROUND_CONFIRM_INTERVAL_MS = 1_100L
-        private const val REWARD_ENTRY_ANIMATION_WAIT_MS = 3_000L
+        private const val REWARD_RESULT_FOREGROUND_CONFIRM_INTERVAL_MS = 2_000L
 
         private const val OCR_SCREENSHOT_MIN_INTERVAL_MS = 1_000L
         private const val OCR_COOLDOWN_RETRY_MIN_MS = 900L
         private const val OCR_COOLDOWN_LOG_INTERVAL_MS = 1_500L
-        private const val EVENT_HANDLE_MIN_INTERVAL_MS = 1200L
-        private const val MIN_STEP_DELAY_MS = 900L
+        private const val DEFAULT_EVENT_HANDLE_MIN_INTERVAL_MS = 1_200L
+        private const val FAST_EVENT_HANDLE_MIN_INTERVAL_MS = 1_000L
+        private const val REWARD_ENTRY_EVENT_HANDLE_MIN_INTERVAL_MS = 1_500L
+        private const val REWARD_RESULT_EVENT_HANDLE_MIN_INTERVAL_MS = 1_500L
+        private const val MIN_STEP_DELAY_MS = 1_000L
         private const val STAGE_REMINDER_MIN_INTERVAL_MS = 1500L
+        private const val STAGE_RETRY_MIN_MS = 2_000L
+        private const val STAGE_RETRY_MAX_MS = 3_000L
+        private const val JUMP_CONFIRM_MIN_MS = 1_000L
+        private const val JUMP_CONFIRM_MAX_MS = 2_000L
+        private const val REWARD_ENTRY_PREPARE_MIN_MS = 2_000L
+        private const val REWARD_ENTRY_PREPARE_MAX_MS = 3_000L
+        private const val REWARD_ANIMATION_WAIT_MIN_MS = 5_000L
+        private const val REWARD_ANIMATION_WAIT_MAX_MS = 6_000L
         private const val WATCH_BUTTON_LOOSE_MATCH_RETRY_THRESHOLD = 4
         private const val NODE_MATCH_MIN_SCORE = 145
         private const val OCR_MATCH_MIN_SCORE = 150
         private const val FINISH_HIT_PRIORITY_BONUS = 20
+        private const val CLICK_CENTER_JITTER_RATIO = 0.08f
+        private const val CLICK_CENTER_JITTER_MAX_PX = 12
+        private const val CLICK_DURATION_MIN_MS = 70L
+        private const val CLICK_DURATION_MAX_MS = 130L
         private const val RETURN_SELF_MAX_RETRY = 8
         private const val RETURN_SELF_RETRY_MS = 900L
         private const val RETURN_SELF_ACTION_INTERVAL_MS = 1_100L
